@@ -28,6 +28,8 @@ from io import StringIO
 from pulp import *
 from flask import Flask
 from flask_cors import CORS
+from gurobipy import Model, GRB, quicksum
+from deap import base, creator, tools, algorithms
 
 app = Flask(__name__)
 CORS(app)
@@ -828,6 +830,73 @@ def calculate_linked_sections_penalty(x, class_sections, timeslots):
 
 
 
+def optimize_schedule_with_gurobi(class_sections):
+    # Setup Gurobi environment and model
+    model = Model("Class_Scheduling")
+    
+    # Assume create_meeting_times(), and other necessary functions and data structures are defined elsewhere
+    meeting_times = create_meeting_times()  # This should be defined based on your specific scenario
+    
+    # Helper function to get attribute or key value
+    def get_value(item, key, default=None):
+        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+    
+    # Create a set of unique rooms
+    rooms = set(cls['room'] for cls in class_sections if cls['room'].strip())
+    instructors = set(get_value(cls, 'faculty1') for cls in class_sections)
+    timeslots = [f"{mt['days']} - {mt['start_time']}" for mt in meeting_times]
+
+    # Objective function weights (Example values, adjust as necessary)
+    weights = {
+        'class_overlap': 1.0,
+        'timeslot_avoidance': 1.0,
+        'move_penalty': 1.0,
+        'blocked_slot_penalty': 1.0,
+        'linked_sections_penalty': 1.0
+    }
+
+    # Create decision variables
+    x = model.addVars(((cls['section'], tsl) for cls in class_sections for tsl in timeslots), vtype=GRB.BINARY, name="x")
+    
+    # Define penalties and objective function here (details omitted for brevity)
+    
+    # Define constraints
+    # For each class, ensure it is assigned to exactly one timeslot
+    for cls in class_sections:
+        model.addConstr(quicksum(x[cls['section'], tsl] for tsl in timeslots) == 1, f"OneClassOneSlot_{cls['section']}")
+
+    # Ensure no two classes are in the same room at the same timeslot
+    for room in rooms:
+        for tsl in timeslots:
+            model.addConstr(quicksum(x[cls['section'], tsl] for cls in class_sections if cls['room'] == room) <= 1, f"OneClassPerRoomPerSlot_{room}_{tsl}")
+
+    # Ensure an instructor is only assigned to one class per timeslot
+    for instructor in instructors:
+        for tsl in timeslots:
+            model.addConstr(quicksum(x[cls['section'], tsl] for cls in class_sections if get_value(cls, 'faculty1') == instructor) <= 1, f"OneClassPerInstructorPerSlot_{instructor}_{tsl}")
+
+    # Optimize the model
+    model.optimize()
+
+    # Process the results
+    scheduled_sections = [{
+        'section': section,
+        'timeslot': time,
+        'faculty1': get_value(cls, 'faculty1'),
+        'room': get_value(cls, 'room'),
+        'secCap': get_value(cls, 'secCap', 'Unknown'),
+        'bldg': get_value(cls, 'bldg', 'Unknown')
+    } for section, time in x.keys() if x[section, time].X > 0.5]
+
+    # Compile optimization results
+    optimization_results = {
+        'message': 'Optimization complete with Gurobi',
+        'scheduled_sections': scheduled_sections,
+        'status': model.Status
+    }
+    return optimization_results
+
+
 def optimize_schedule(class_sections):
     # Initial setup
     linked_sections = []  # This should be defined based on your specific data
@@ -1568,6 +1637,124 @@ def convert_schedule_to_ical(schedules, start_date=None, end_date=None):
 
     return str(cal)
 
+
+def evaluateSchedule(individual):
+    # Define penalties
+    overlap_penalty = 300
+    instructor_conflict_penalty = 300
+    room_conflict_penalty = 300
+    proximity_penalty = 2
+    unwanted_timeslot_penalty = 3
+    pattern_violation_penalty = 300
+    mutual_exclusion_penalty = 2
+    same_day_penalty = 300
+
+    # Initialize scoring variables
+    total_score = 0
+    detailed_scores = {}
+    class_timings = {}
+    class_days = {}
+
+    # Function to check if the class follows the MWF or TuTh pattern
+    def follows_desired_pattern(course_identifier, timeslots):
+        mwf_count = sum(['M' in ts and 'W' in ts and 'F' in ts for ts in timeslots])
+        tuth_count = sum(['Tu' in ts and 'Th' in ts for ts in timeslots])
+
+        # For 3-credit classes, either 2 TuTh or 3 MWF slots are acceptable
+        if course_identifier.endswith('_3'):
+            return (mwf_count == 3 and len(timeslots) >= 3) or (tuth_count == 2 and len(timeslots) >= 2)
+        else:
+            return mwf_count == len(timeslots) or tuth_count == len(timeslots)
+
+    # Evaluate each class meeting
+    for i, meeting in enumerate(individual):
+        class_score = 0
+        overlap_violations = 0
+        instructor_conflicts = 0
+        room_conflicts = 0
+        proximity_issues = 0
+        unwanted_timeslot_violations = 0
+        mutual_exclusion_violations = 0
+
+        # Store timing and days for classes 3+ credits
+        if int(meeting['minCredit']) >= 3:
+            course_identifier = meeting['section'].split('_')[0]
+            class_timings.setdefault(course_identifier, set()).add(meeting['timeslot'])
+            days = meeting['timeslot'].split(' - ')[0]
+            class_days.setdefault(course_identifier, set()).update(days.split())
+
+        # Check for overlaps, conflicts, and violations
+        for j, other_meeting in enumerate(individual):
+            if i != j:
+                if meeting['timeslot'] == other_meeting['timeslot']:
+                    overlap_violations += 1
+                    if meeting['room'] == other_meeting['room']:
+                        room_conflicts += 1
+                    if meeting['faculty1'] == other_meeting['faculty1']:
+                        instructor_conflicts += 1
+
+                # Mutual exclusion violations
+                mutually_exclusive_sections = meeting.get('avoid_classes', [])
+                if other_meeting['section'] in mutually_exclusive_sections:
+                    mutual_exclusion_violations += 1
+
+        # Proximity issues for 1-credit classes
+        if meeting['minCredit'] == '1' and meeting['section'].endswith("_one_credit"):
+            base_sec_name = meeting['section'][:-11]
+            three_credit_class_meetings = [s for s in individual if s['section'] == base_sec_name]
+            for cls_3_meeting in three_credit_class_meetings:
+                time_diff = abs((datetime.strptime(meeting['timeslot'].split(' - ')[1], '%I:%M%p') - 
+                                 datetime.strptime(cls_3_meeting['timeslot'].split(' - ')[1], '%I:%M%p')).total_seconds()) / 3600
+                if time_diff > 2:
+                    proximity_issues += 1
+
+        # Unwanted timeslot violations
+        for unwanted_timeslot in meeting.get('unwanted_timeslots', []):
+            unwanted_days, unwanted_time = unwanted_timeslot.split(' - ')
+            if unwanted_days in meeting['timeslot'] and unwanted_time == meeting['timeslot'].split(' - ')[1]:
+                unwanted_timeslot_violations += 1
+
+        # Calculate score for this class meeting
+        class_score = (overlap_violations * overlap_penalty +
+                       instructor_conflicts * instructor_conflict_penalty +
+                       room_conflicts * room_conflict_penalty +
+                       proximity_issues * proximity_penalty +
+                       unwanted_timeslot_violations * unwanted_timeslot_penalty +
+                       mutual_exclusion_violations * mutual_exclusion_penalty)
+
+        # Update total score and details
+        total_score += class_score
+        detailed_scores[meeting['section']] = {
+            'score': class_score,
+            'overlap_violations': overlap_violations,
+            'instructor_conflicts': instructor_conflicts,
+            'room_conflicts': room_conflicts,
+            'proximity_issues': proximity_issues,
+            'unwanted_timeslot_violations': unwanted_timeslot_violations,
+            'mutual_exclusion_violations': mutual_exclusion_violations
+        }
+
+    # Check for pattern matching and same day violations
+    for course, timeslots in class_timings.items():
+        if not follows_desired_pattern(course, timeslots):
+            pattern_violation = pattern_violation_penalty * len(timeslots)
+            total_score += pattern_violation
+            for section in detailed_scores:
+                if section.startswith(course):
+                    detailed_scores[section]['pattern_violation'] = pattern_violation
+        
+        # Same day violations
+        if len(class_days[course]) < len(timeslots):
+            same_day_violation = same_day_penalty * (len(timeslots) - len(class_days[course]))
+            total_score += same_day_violation
+            for section in detailed_scores:
+                if section.startswith(course):
+                    detailed_scores[section].setdefault('same_day_violation', 0)
+                    detailed_scores[section]['same_day_violation'] += same_day_violation
+
+    return {'total_score': total_score, 'detailed_scores': detailed_scores}
+
+
 def validate_csv_for_class_section(csv_data):
     required_columns = ['section', 'title', 'minCredit', 'secCap', 'room', 'bldg', 'weekDays', 'csmStart', 'csmEnd', 'faculty1']
     optional_columns = ['hold', 'restrictions', 'blockedTimeSlots', 'weekDays']
@@ -1589,6 +1776,176 @@ def validate_csv_for_class_section(csv_data):
 
     return "CSV data is valid for ClassSection.", True
 
+
+def custom_mutate(individual, mutpb, failed_sections):
+    section_timeslots_map = {}
+    full_meeting_times = create_full_meeting_times()
+    for class_section in individual:
+        section_name = class_section['section']
+        section_timeslots_map.setdefault(section_name, []).append(class_section)
+
+    for i in range(len(individual)):
+        class_section = individual[i]
+        section_name = class_section['section']
+
+        # Increase mutation probability for failed sections
+        adjusted_mutpb = mutpb * 100 if section_name in failed_sections else mutpb
+
+        if random.random() < adjusted_mutpb:
+            minCredit = int(class_section['minCredit'])
+            pattern_timeslots = []
+            mwf_timeslots = []
+            tuth_timeslots = []
+
+            if minCredit >= 3:
+                    all_timeslots = section_timeslots_map[section_name]
+                    is_mwf = all(['M' in ts['timeslot'] and 'W' in ts['timeslot'] and 'F' in ts['timeslot'] for ts in all_timeslots])
+                    is_tuth = all(['Tu' in ts['timeslot'] and 'Th' in ts['timeslot'] for ts in all_timeslots])
+
+                    if random.random() < 0.5:  # Change timeslot within the same pattern
+                        if is_mwf:
+                            pattern_timeslots = [ts for ts in full_meeting_times if 'M' in ts['days'] and 'W' in ts['days'] and 'F' in ts['days']]
+                        elif is_tuth:
+                            pattern_timeslots = [ts for ts in full_meeting_times if 'Tu' in ts['days'] and 'Th' in ts['days']]
+
+                        if pattern_timeslots:
+                            new_timeslot = random.choice(pattern_timeslots)
+                            for ts in all_timeslots:
+                                ts['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
+                    else:  # Switch pattern
+                        if is_mwf:
+                            tuth_timeslots = [ts for ts in full_meeting_times if 'Tu' in ts['days'] and 'Th' in ts['days']]
+                        elif is_tuth:
+                            mwf_timeslots = [ts for ts in full_meeting_times if 'M' in ts['days'] and 'W' in ts['days'] and 'F' in ts['days']]
+
+                        if (is_mwf and tuth_timeslots) or (is_tuth and mwf_timeslots):
+                            new_timeslot = random.choice(tuth_timeslots if is_mwf else mwf_timeslots)
+                            for ts in all_timeslots:
+                                ts['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
+
+            else:
+                current_day = class_section['timeslot'].split(' - ')[0]
+                same_day_timeslots = [ts for ts in full_meeting_times if current_day in ts['days']]
+                if same_day_timeslots:
+                    new_timeslot = random.choice(same_day_timeslots)
+                    class_section['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
+                    
+    return individual,
+
+def custom_crossover(ind1, ind2):
+    full_meeting_times = create_full_meeting_times()
+
+    # Group classes by pattern
+    mwf1, tuth1, other1 = group_by_pattern(ind1)
+    mwf2, tuth2, other2 = group_by_pattern(ind2)
+
+    # Randomly select crossover points for MWF and TuTh patterns
+    crossover_point_mwf = random.randint(1, min(len(mwf1), len(mwf2)) - 1)
+    crossover_point_tuth = random.randint(1, min(len(tuth1), len(tuth2)) - 1)
+
+    # Swap MWF sections if it results in valid schedules
+    mwf1_new = mwf1[:crossover_point_mwf] + mwf2[crossover_point_mwf:]
+    mwf2_new = mwf2[:crossover_point_mwf] + mwf1[crossover_point_mwf:]
+    if is_valid_individual(mwf1_new + tuth1 + other1)[0] and is_valid_individual(mwf2_new + tuth2 + other2)[0]:
+        mwf1, mwf2 = mwf1_new, mwf2_new
+
+    # Swap TuTh sections if it results in valid schedules
+    tuth1_new = tuth1[:crossover_point_tuth] + tuth2[crossover_point_tuth:]
+    tuth2_new = tuth2[:crossover_point_tuth] + tuth1[crossover_point_tuth:]
+    if is_valid_individual(mwf1 + tuth1_new + other1)[0] and is_valid_individual(mwf2 + tuth2_new + other2)[0]:
+        tuth1, tuth2 = tuth1_new, tuth2_new
+
+    # Swap other classes if it results in valid schedules
+    crossover_point_other = random.randint(1, len(other1))
+    other1_new = other1[:crossover_point_other] + other2[crossover_point_other:]
+    other2_new = other2[:crossover_point_other] + other1[crossover_point_other:]
+    if is_valid_individual(mwf1 + tuth1 + other1_new)[0] and is_valid_individual(mwf2 + tuth2 + other2_new)[0]:
+        other1, other2 = other1_new, other2_new
+
+    # Reconstruct ind1 and ind2 from the modified groups
+    ind1_new = mwf1 + tuth1 + other1
+    ind2_new = mwf2 + tuth2 + other2
+
+    # Invalidate the fitness of the modified individuals
+    del ind1.fitness.values
+    del ind2.fitness.values
+
+    # Update the individuals only if the new combinations are valid
+    ind1[:] = ind1_new
+    ind2[:] = ind2_new
+
+    return ind1, ind2
+
+
+
+def run_genetic_algorithm(combined_expanded_schedule, report,ngen=800, pop_size=50, cxpb=0.3, mutpb=0.2):
+    # Create necessary data
+    full_meeting_times_data = create_full_meeting_times()
+
+    # Setup the DEAP toolbox
+    toolbox = base.Toolbox()
+    
+    # Register individual and population creation methods
+    toolbox.register("individual", create_individual, report, combined_expanded_schedule,)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+
+    # Register custom mutate method
+    toolbox.register(
+        "mutate", 
+        custom_mutate,  
+        report,
+        mutpb=0.01,
+    )
+    # Register mate and select methods
+    toolbox.register("mate", custom_crossover)
+    toolbox.register("select", tools.selTournament, tournsize=3)
+
+    # Adjust the evaluate function to use only the total score from evaluateSchedule's output
+    def evaluate_wrapper(individual):
+        evaluation_results = evaluateSchedule(individual)
+        return evaluation_results['total_score'],
+
+    toolbox.register("evaluate", evaluate_wrapper)
+
+    # Create initial population
+    population = toolbox.population(n=pop_size)
+
+    # Evaluate initial population's fitness
+    fitnesses = list(map(toolbox.evaluate, population))
+    for ind, fit in zip(population, fitnesses):
+        ind.fitness.values = fit
+
+    # Collecting statistics
+    stats = tools.Statistics(lambda ind: ind.fitness.values)
+    stats.register("avg", np.mean)
+    stats.register("min", np.min)
+    stats.register("max", np.max)
+
+    # Run genetic algorithm
+    final_population, logbook = algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, stats=stats, verbose=True)
+
+
+    # Process final population
+    sorted_population = sorted(population, key=lambda ind: ind.fitness.values[0])
+    
+   
+
+    # Identify top unique schedules
+    top_unique_schedules = []
+    used_scores = set()
+    for ind in sorted_population:
+        fitness_score = ind.fitness.values[0]
+        if fitness_score not in used_scores:
+            top_unique_schedules.append((ind, fitness_score))
+            used_scores.add(fitness_score)
+            if len(top_unique_schedules) == 5:
+                break
+
+    
+     # take the top ga solution and split back into 3 and 1 credit classes and rerurn pulp 
+    three_credit_classes, remaining_classes= divide_schedules_by_credit(top_unique_schedules[0][0])
+    
+    return top_unique_schedules
 
 
 @app.route('/get_csv', methods=['GET'])
@@ -1666,11 +2023,19 @@ def optimize():
         # Combine and expand the schedules
         combined_expanded_schedule = combine_and_expand_schedule(three_credit_results, remaining_class_results, create_full_meeting_times(), class_sections)
 
-
-        # use the genetic algorithm evalutaion function to evaluate the schedule
+        #lets validate the results against he constraints using the GA method
+    
+        failure_report=is_valid_individual(combined_expanded_schedule)
         
-        pulp_score = "Successfully optimized"
-
+        # use the genetic algorithm evalutaion function to evaluate the schedule
+        pulp_evaluation_results = evaluateSchedule(combined_expanded_schedule)
+        pulp_score = pulp_evaluation_results['total_score']
+            
+        # Run the genetic algorithm to optimize the schedule further
+        ga_schedules = run_genetic_algorithm(combined_expanded_schedule,failure_report)
+        
+        print(ga_schedules)
+        
         
         #marked_combined_expanded_schedule
         all_schedules = ({'schedule': combined_expanded_schedule, 'score': pulp_score, 'algorithm': 'PuLP', 'slot_differences': 0})
