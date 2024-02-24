@@ -38,19 +38,15 @@ CORS(app)
 
 global_settings = {}
 results_storage = {}
+# Define the problem class
+creator.create("FitnessMax", base.Fitness, weights=(1.0,))
+creator.create("Individual", list, fitness=creator.FitnessMax)
 
 def string_to_color(s):
     # Use a hash function to convert the string to a hexadecimal color code
     hash_object = hashlib.md5(s.encode())
     return '#' + hash_object.hexdigest()[:6]
 
-
-import random
-from deap import creator
-
-import random
-
-import random
 
 def follows_pattern(timeslot, pattern):
     """Check if a timeslot follows a specific pattern (MWF or TuTh)."""
@@ -1777,7 +1773,7 @@ def validate_csv_for_class_section(csv_data):
     return "CSV data is valid for ClassSection.", True
 
 
-def custom_mutate(individual, mutpb, failed_sections):
+def custom_mutate(individual, mutpb):
     section_timeslots_map = {}
     full_meeting_times = create_full_meeting_times()
     for class_section in individual:
@@ -1786,42 +1782,38 @@ def custom_mutate(individual, mutpb, failed_sections):
 
     for i in range(len(individual)):
         class_section = individual[i]
-        section_name = class_section['section']
-
-        # Increase mutation probability for failed sections
-        adjusted_mutpb = mutpb * 100 if section_name in failed_sections else mutpb
-
-        if random.random() < adjusted_mutpb:
+        # Directly use the mutation probability provided (mutpb) without adjustment for failed_sections
+        if random.random() < mutpb:
             minCredit = int(class_section['minCredit'])
             pattern_timeslots = []
             mwf_timeslots = []
             tuth_timeslots = []
 
             if minCredit >= 3:
-                    all_timeslots = section_timeslots_map[section_name]
-                    is_mwf = all(['M' in ts['timeslot'] and 'W' in ts['timeslot'] and 'F' in ts['timeslot'] for ts in all_timeslots])
-                    is_tuth = all(['Tu' in ts['timeslot'] and 'Th' in ts['timeslot'] for ts in all_timeslots])
+                all_timeslots = section_timeslots_map[section_name]
+                is_mwf = all(['M' in ts['timeslot'] and 'W' in ts['timeslot'] and 'F' in ts['timeslot'] for ts in all_timeslots])
+                is_tuth = all(['Tu' in ts['timeslot'] and 'Th' in ts['timeslot'] for ts in all_timeslots])
 
-                    if random.random() < 0.5:  # Change timeslot within the same pattern
-                        if is_mwf:
-                            pattern_timeslots = [ts for ts in full_meeting_times if 'M' in ts['days'] and 'W' in ts['days'] and 'F' in ts['days']]
-                        elif is_tuth:
-                            pattern_timeslots = [ts for ts in full_meeting_times if 'Tu' in ts['days'] and 'Th' in ts['days']]
+                if random.random() < 0.5:  # Change timeslot within the same pattern
+                    if is_mwf:
+                        pattern_timeslots = [ts for ts in full_meeting_times if 'M' in ts['days'] and 'W' in ts['days'] and 'F' in ts['days']]
+                    elif is_tuth:
+                        pattern_timeslots = [ts for ts in full_meeting_times if 'Tu' in ts['days'] and 'Th' in ts['days']]
 
-                        if pattern_timeslots:
-                            new_timeslot = random.choice(pattern_timeslots)
-                            for ts in all_timeslots:
-                                ts['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
-                    else:  # Switch pattern
-                        if is_mwf:
-                            tuth_timeslots = [ts for ts in full_meeting_times if 'Tu' in ts['days'] and 'Th' in ts['days']]
-                        elif is_tuth:
-                            mwf_timeslots = [ts for ts in full_meeting_times if 'M' in ts['days'] and 'W' in ts['days'] and 'F' in ts['days']]
+                    if pattern_timeslots:
+                        new_timeslot = random.choice(pattern_timeslots)
+                        for ts in all_timeslots:
+                            ts['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
+                else:  # Switch pattern
+                    if is_mwf:
+                        tuth_timeslots = [ts for ts in full_meeting_times if 'Tu' in ts['days'] and 'Th' in ts['days']]
+                    elif is_tuth:
+                        mwf_timeslots = [ts for ts in full_meeting_times if 'M' in ts['days'] and 'W' in ts['days'] and 'F' in ts['days']]
 
-                        if (is_mwf and tuth_timeslots) or (is_tuth and mwf_timeslots):
-                            new_timeslot = random.choice(tuth_timeslots if is_mwf else mwf_timeslots)
-                            for ts in all_timeslots:
-                                ts['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
+                    if (is_mwf and tuth_timeslots) or (is_tuth and mwf_timeslots):
+                        new_timeslot = random.choice(tuth_timeslots if is_mwf else mwf_timeslots)
+                        for ts in all_timeslots:
+                            ts['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
 
             else:
                 current_day = class_section['timeslot'].split(' - ')[0]
@@ -1829,8 +1821,10 @@ def custom_mutate(individual, mutpb, failed_sections):
                 if same_day_timeslots:
                     new_timeslot = random.choice(same_day_timeslots)
                     class_section['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
-                    
+
     return individual,
+
+
 
 def custom_crossover(ind1, ind2):
     full_meeting_times = create_full_meeting_times()
@@ -1878,7 +1872,9 @@ def custom_crossover(ind1, ind2):
 
 
 
-def run_genetic_algorithm(combined_expanded_schedule, report,ngen=800, pop_size=50, cxpb=0.3, mutpb=0.2):
+# Assuming create_individual, create_full_meeting_times, custom_crossover, evaluateSchedule, and divide_schedules_by_credit are defined elsewhere
+
+def run_genetic_algorithm(combined_expanded_schedule, report, ngen=800, pop_size=50, cxpb=0.3, mutpb=0.2):
     # Create necessary data
     full_meeting_times_data = create_full_meeting_times()
 
@@ -1886,16 +1882,12 @@ def run_genetic_algorithm(combined_expanded_schedule, report,ngen=800, pop_size=
     toolbox = base.Toolbox()
     
     # Register individual and population creation methods
-    toolbox.register("individual", create_individual, report, combined_expanded_schedule,)
+    toolbox.register("individual", create_individual, report, combined_expanded_schedule)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-    # Register custom mutate method
-    toolbox.register(
-        "mutate", 
-        custom_mutate,  
-        report,
-        mutpb=0.01,
-    )
+    # Register custom mutate method without relying on failed sections
+    toolbox.register("mutate", lambda ind: custom_mutate(ind, mutpb))
+
     # Register mate and select methods
     toolbox.register("mate", custom_crossover)
     toolbox.register("select", tools.selTournament, tournsize=3)
@@ -1910,7 +1902,7 @@ def run_genetic_algorithm(combined_expanded_schedule, report,ngen=800, pop_size=
     # Create initial population
     population = toolbox.population(n=pop_size)
 
-    # Evaluate initial population's fitness
+    # Evaluate the initial population's fitness
     fitnesses = list(map(toolbox.evaluate, population))
     for ind, fit in zip(population, fitnesses):
         ind.fitness.values = fit
@@ -1924,11 +1916,8 @@ def run_genetic_algorithm(combined_expanded_schedule, report,ngen=800, pop_size=
     # Run genetic algorithm
     final_population, logbook = algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, stats=stats, verbose=True)
 
-
     # Process final population
-    sorted_population = sorted(population, key=lambda ind: ind.fitness.values[0])
-    
-   
+    sorted_population = sorted(population, key=lambda ind: ind.fitness.values[0], reverse=True)
 
     # Identify top unique schedules
     top_unique_schedules = []
@@ -1941,10 +1930,9 @@ def run_genetic_algorithm(combined_expanded_schedule, report,ngen=800, pop_size=
             if len(top_unique_schedules) == 5:
                 break
 
-    
-     # take the top ga solution and split back into 3 and 1 credit classes and rerurn pulp 
-    three_credit_classes, remaining_classes= divide_schedules_by_credit(top_unique_schedules[0][0])
-    
+    # Take the top GA solution and split back into 3 and 1 credit classes and return them
+    three_credit_classes, remaining_classes = divide_schedules_by_credit(top_unique_schedules[0][0])
+
     return top_unique_schedules
 
 
@@ -2034,7 +2022,7 @@ def optimize():
         # Run the genetic algorithm to optimize the schedule further
         ga_schedules = run_genetic_algorithm(combined_expanded_schedule,failure_report)
         
-        print(ga_schedules)
+        #print(ga_schedules)
         
         
         #marked_combined_expanded_schedule
