@@ -39,8 +39,8 @@ CORS(app)
 global_settings = {}
 results_storage = {}
 # Define the problem class
-creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-creator.create("Individual", list, fitness=creator.FitnessMax)
+creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+creator.create("Individual", list, fitness=creator.FitnessMin)
 
 def string_to_color(s):
     # Use a hash function to convert the string to a hexadecimal color code
@@ -1874,66 +1874,78 @@ def custom_crossover(ind1, ind2):
 
 # Assuming create_individual, create_full_meeting_times, custom_crossover, evaluateSchedule, and divide_schedules_by_credit are defined elsewhere
 
-def run_genetic_algorithm(combined_expanded_schedule, report, ngen=800, pop_size=50, cxpb=0.3, mutpb=0.2):
-    # Create necessary data
-    full_meeting_times_data = create_full_meeting_times()
+def run_genetic_algorithm(combined_expanded_schedule, report, ngen=10, pop_size=50, cxpb=0.3, mutpb=0.2):
+    try:
+        # Create necessary data
+        full_meeting_times_data = create_full_meeting_times()
 
-    # Setup the DEAP toolbox
-    toolbox = base.Toolbox()
-    
-    # Register individual and population creation methods
-    toolbox.register("individual", create_individual, report, combined_expanded_schedule)
-    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+        # Setup the DEAP toolbox
+        toolbox = base.Toolbox()
+        
+        # Register individual and population creation methods
+        toolbox.register("individual", create_individual, report, combined_expanded_schedule)
+        toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-    # Register custom mutate method without relying on failed sections
-    toolbox.register("mutate", lambda ind: custom_mutate(ind, mutpb))
+        # Register custom mutate method without relying on failed sections
+        toolbox.register("mutate", lambda ind: custom_mutate(ind, mutpb))
 
-    # Register mate and select methods
-    toolbox.register("mate", custom_crossover)
-    toolbox.register("select", tools.selTournament, tournsize=3)
+        # Register mate and select methods
+        toolbox.register("mate", custom_crossover)
+        toolbox.register("select", tools.selTournament, tournsize=3)
 
-    # Adjust the evaluate function to use only the total score from evaluateSchedule's output
-    def evaluate_wrapper(individual):
-        evaluation_results = evaluateSchedule(individual)
-        return evaluation_results['total_score'],
+        # Adjust the evaluate function to use only the total score from evaluateSchedule's output
+        def evaluate_wrapper(individual):
+            evaluation_results = evaluateSchedule(individual)
+            return evaluation_results['total_score'],
 
-    toolbox.register("evaluate", evaluate_wrapper)
+        toolbox.register("evaluate", evaluate_wrapper)
 
-    # Create initial population
-    population = toolbox.population(n=pop_size)
+        # Create initial population
+        population = toolbox.population(n=pop_size)
 
-    # Evaluate the initial population's fitness
-    fitnesses = list(map(toolbox.evaluate, population))
-    for ind, fit in zip(population, fitnesses):
-        ind.fitness.values = fit
+        # Evaluate the initial population's fitness
+        fitnesses = list(map(toolbox.evaluate, population))
+        for ind, fit in zip(population, fitnesses):
+            ind.fitness.values = fit
 
-    # Collecting statistics
-    stats = tools.Statistics(lambda ind: ind.fitness.values)
-    stats.register("avg", np.mean)
-    stats.register("min", np.min)
-    stats.register("max", np.max)
+        # Collecting statistics
+        stats = tools.Statistics(lambda ind: ind.fitness.values)
+        stats.register("avg", np.mean)
+        stats.register("min", np.min)
+        stats.register("max", np.max)
 
-    # Run genetic algorithm
-    final_population, logbook = algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, stats=stats, verbose=True)
+        # Run genetic algorithm
+        final_population, logbook = algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, stats=stats, verbose=True)
 
-    # Process final population
-    sorted_population = sorted(population, key=lambda ind: ind.fitness.values[0], reverse=True)
+        # Process final population
+        sorted_population = sorted(final_population, key=lambda ind: ind.fitness.values[0])  # Sort in ascending order
 
-    # Identify top unique schedules
-    top_unique_schedules = []
-    used_scores = set()
-    for ind in sorted_population:
-        fitness_score = ind.fitness.values[0]
-        if fitness_score not in used_scores:
-            top_unique_schedules.append((ind, fitness_score))
-            used_scores.add(fitness_score)
-            if len(top_unique_schedules) == 5:
-                break
+        # Identify top unique schedules
+        top_unique_schedules = []
+        used_scores = set()
+        for ind in sorted_population:
+            fitness_score = ind.fitness.values[0]
+            if fitness_score not in used_scores:
+                top_unique_schedules.append((ind, fitness_score))
+                used_scores.add(fitness_score)
+                if len(top_unique_schedules) == 5:
+                    break
 
-    # Take the top GA solution and split back into 3 and 1 credit classes and return them
-    three_credit_classes, remaining_classes = divide_schedules_by_credit(top_unique_schedules[0][0])
+        # Take the top GA solution and split back into 3 and 1 credit classes and return them
+        three_credit_classes, remaining_classes = divide_schedules_by_credit(top_unique_schedules[0][0])
 
-    return top_unique_schedules
+        return top_unique_schedules,three_credit_classes, remaining_classes
+
+    except Exception as e:
+        # Handle the error gracefully
+        initial_sorted_population = sorted(population, key=lambda ind: ind.fitness.values if ind.fitness.valid else float('-inf'), reverse=True)
+        if initial_sorted_population:
+            top_individual = initial_sorted_population[0]
+            # Here you might need to convert the top_individual into the desired return format
+            # For demonstration, we return the individual directly
+            return top_individual
+        else:
+            return "An error occurred, and no valid individuals are available."
 
 
 @app.route('/get_csv', methods=['GET'])
@@ -2020,11 +2032,9 @@ def optimize():
         pulp_score = pulp_evaluation_results['total_score']
             
         # Run the genetic algorithm to optimize the schedule further
-        ga_schedules = run_genetic_algorithm(combined_expanded_schedule,failure_report)
+        top_unique_schedules, three_credit_classes, remaining_classes = run_genetic_algorithm(combined_expanded_schedule,failure_report)
         
-        #print(ga_schedules)
-        
-        
+      
         #marked_combined_expanded_schedule
         all_schedules = ({'schedule': combined_expanded_schedule, 'score': pulp_score, 'algorithm': 'PuLP', 'slot_differences': 0})
 
@@ -2033,14 +2043,23 @@ def optimize():
         final_schedule = group_and_update_schedule(all_schedules_sorted)
 
 
+       # Preparing the final response with GA results
+        ga_results = {
+            'top_unique_schedules': top_unique_schedules,
+            'three_credit_classes': three_credit_classes,  # Include formatted GA results
+            'remaining_classes': remaining_classes         # Include formatted GA results
+        }
         
+        # Combine PuLP and GA results for the response
         final_results = {
             'unique_key': unique_key,
-            'sorted_schedule': final_schedule,
-            'calendar_events': calendar_events,
-            
+            'sorted_schedule': final_schedule,  # This might be your optimized schedule
+            'calendar_events': calendar_events,  # Calendar events generated from optimization
             'message': 'Optimization completed'
         }
+        
+        # Update the final results with GA optimization details
+        final_results.update(ga_results) 
         
         write_results_to_json(unique_key, final_results)
         return jsonify(final_results)
