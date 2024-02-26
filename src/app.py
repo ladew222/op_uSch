@@ -550,38 +550,36 @@ def read_csv_and_create_class_sections(csv_filename):
     return class_sections
 
 
-def group_and_update_schedule(schedule_info):
-    updated_schedules = []
+def group_and_update_schedule(schedule_info_list):
+    updated_schedules_list = []
 
-    # Divide each schedule into groups of 3-credit and remaining classes (including 1-credit classes)
-    three_credit_classes, remaining_classes = divide_schedules_by_credit(schedule_info['schedule'])
+    for schedule_info in schedule_info_list:
+        # Extract the individual schedule from the current schedule_info
+        individual_schedule = schedule_info['schedule']
 
-    # Group 3-credit classes based on common time patterns
-    grouped_three_credit_classes = []
-    for cls in three_credit_classes:
-        # Add logic to group 3-credit classes by common patterns
-        grouped_three_credit_classes.append({
-            'section': cls['section'],
-            'timeslot': cls['timeslot'],
-            'minCredit': cls['minCredit'],
-            'secCap': cls['secCap'],
-            'faculty1': cls['faculty1'],
-            'room': cls['room'],
-            'bldg': cls['bldg']
+        # Divide each schedule into groups of 3-credit and remaining classes
+        three_credit_classes, remaining_classes = divide_schedules_by_credit(individual_schedule)
+
+        # Group 3-credit classes based on common time patterns
+        grouped_three_credit_classes = []
+        for cls in three_credit_classes:
+            # Since the cls dictionary already has the required keys, we can append it directly
+            grouped_three_credit_classes.append(cls)
+
+        # Directly append remaining classes, including 1-credit classes, to the schedule
+        updated_schedule = grouped_three_credit_classes + remaining_classes
+
+        # Update the schedule in the current schedule_info dictionary
+        updated_schedules_list.append({
+            'schedule': updated_schedule,
+            'score': schedule_info['score'],
+            'algorithm': schedule_info['algorithm'],
+            'slot_differences': schedule_info['slot_differences'],
+            'calendar_events': schedule_info.get('calendar_events', [])  # include calendar_events if present
         })
 
-    # Directly append remaining classes, including 1-credit classes, to the schedule
-    updated_schedule = grouped_three_credit_classes + remaining_classes
+    return updated_schedules_list
 
-    # Update the schedule in the schedule_info dictionary
-    updated_schedules.append({
-        'schedule': updated_schedule,
-        'score': schedule_info['score'],
-        'algorithm': schedule_info['algorithm'],
-        'slot_differences': schedule_info['slot_differences']
-    })
-
-    return updated_schedules
 
 
 
@@ -1157,7 +1155,8 @@ def process_calendar_data(three_credit_results, remaining_class_results):
                     'bldg': result['bldg'],
                     'color': color
                 }
-                calendar_data.append(calendar_event)
+                if calendar_event and calendar_event['start'] and calendar_event['end'] and calendar_event['faculty1'] and calendar_event['room'] and calendar_event['bldg'] and calendar_event['color']:
+                    calendar_data.append(calendar_event)
 
     return calendar_data
 
@@ -1932,9 +1931,9 @@ def run_genetic_algorithm(combined_expanded_schedule, report, ngen=10, pop_size=
                     break
 
         # Take the top GA solution and split back into 3 and 1 credit classes and return them
-        three_credit_classes, remaining_classes = divide_schedules_by_credit(top_unique_schedules[0][0])
+        #three_credit_classes, remaining_classes = divide_schedules_by_credit(top_unique_schedules[0][0])
 
-        return top_unique_schedules,three_credit_classes, remaining_classes
+        return top_unique_schedules
 
     except Exception as e:
         # Handle the error gracefully
@@ -2030,39 +2029,71 @@ def optimize():
         # use the genetic algorithm evalutaion function to evaluate the schedule
         pulp_evaluation_results = evaluateSchedule(combined_expanded_schedule)
         pulp_score = pulp_evaluation_results['total_score']
+        
+        
+        #marked_combined_expanded_schedule
+        #all_schedules = ({'schedule': combined_expanded_schedule, 'score': pulp_score, 'algorithm': 'PuLP', 'calendar_events':calendar_events , 'slot_differences': 0})
+        
+        #marked_combined_expanded_schedule
+        all_schedules = [{
+            'schedule': combined_expanded_schedule,
+            'score': pulp_score,
+            'algorithm': 'PuLP',
+            'calendar_events': calendar_events,
+            'slot_differences': 0
+        }]
             
         # Run the genetic algorithm to optimize the schedule further
-        top_unique_schedules, three_credit_classes, remaining_classes = run_genetic_algorithm(combined_expanded_schedule,failure_report)
+        top_unique_schedules = run_genetic_algorithm(combined_expanded_schedule,failure_report)
         
-      
-        #marked_combined_expanded_schedule
-        all_schedules = ({'schedule': combined_expanded_schedule, 'score': pulp_score, 'algorithm': 'PuLP', 'slot_differences': 0})
+        
+         # Process each top GA schedule to add to all_schedules
+        for ga_schedule in top_unique_schedules:
+            # Split schedules by credit
+            three_credit_classes, remaining_classes = divide_schedules_by_credit(ga_schedule[0])
 
-        #all_schedules_sorted = sorted(all_schedules, key=lambda x: x['score'])
+            if  is_valid_individual(ga_schedule[0]):
+                # Prepare the three-credit class results in the required format for processing calendar events
+                three_credit_results_formatted = {
+                    'message': 'Optimization complete',
+                    'scheduled_sections': three_credit_classes,
+                    'status': 'Optimal'
+                }
+
+                # Prepare the remaining class results in the required format for processing calendar events
+                remaining_class_results_formatted = {
+                    'message': 'Optimization for remaining classes complete',
+                    'scheduled_sections': remaining_classes,
+                    'status': 'Success'
+                }
+                
+                # Generate calendar events for the GA schedule
+                calendar_events_ga = process_calendar_data(three_credit_results_formatted, remaining_class_results_formatted)
+                
+                # Add GA schedule to all_schedules
+                all_schedules.append({
+                    'schedule': ga_schedule[0],
+                    'score': ga_schedule[1],
+                    'algorithm': 'GA',
+                    'calendar_events': calendar_events_ga,  # GA calendar events
+                    'slot_differences': 0  # Assuming ga_schedule[2] holds slot differences
+                })
+
+            
+
+        all_schedules_sorted = sorted(all_schedules, key=lambda x: x['score'])
         all_schedules_sorted = all_schedules
         final_schedule = group_and_update_schedule(all_schedules_sorted)
 
-
-       # Preparing the final response with GA results
-        ga_results = {
-            'top_unique_schedules': top_unique_schedules,
-            'three_credit_classes': three_credit_classes,  # Include formatted GA results
-            'remaining_classes': remaining_classes         # Include formatted GA results
-        }
-        
         # Combine PuLP and GA results for the response
         final_results = {
             'unique_key': unique_key,
             'sorted_schedule': final_schedule,  # This might be your optimized schedule
-            'calendar_events': calendar_events,  # Calendar events generated from optimization
             'message': 'Optimization completed'
         }
         
-        # Update the final results with GA optimization details
-        final_results.update(ga_results) 
-        
         write_results_to_json(unique_key, final_results)
-        return jsonify(final_results)
+        return jsonify(final_schedule)
 
     except Exception as e:
             # Handle specific exceptions or general exceptions
