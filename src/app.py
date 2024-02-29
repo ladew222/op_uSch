@@ -440,23 +440,38 @@ class ClassSection:
         self.assigned_meeting_time_indices = assigned_meeting_time_indices
 
     def to_dictionary(self):
-        # Convert the attributes of the class instance to a dictionary
-        return {
-            'section': self.section,
-            'title': self.title,
-            'minCredit': self.minCredit,
-            'secCap': self.secCap,
-            'room': self.room,
-            'bldg': self.bldg,
-            'week_days': self.week_days,
-            'csm_start': self.csm_start,
-            'csm_end': self.csm_end,
-            'faculty1': self.faculty1,
-            'holdValue': self.holdValue,
-            'avoid_classes': self.avoid_classes,
-            'restrictions': self.unwanted_timeslots,
-        }
-        
+        try:
+            # Convert the attributes of the class instance to a dictionary
+            result = {
+                'section': getattr(self, 'section', None),
+                'title': getattr(self, 'title', None),
+                'minCredit': getattr(self, 'minCredit', None),
+                'secCap': getattr(self, 'secCap', None),
+                'room': getattr(self, 'room', None),
+                'bldg': getattr(self, 'bldg', None),
+                'week_days': getattr(self, 'week_days', None),
+                'csm_start': getattr(self, 'csm_start', None),
+                'csm_end': getattr(self, 'csm_end', None),
+                'faculty1': getattr(self, 'faculty1', None),
+                'holdValue': getattr(self, 'holdValue', None),
+                'avoid_classes': getattr(self, 'avoid_classes', None),
+                'restrictions': getattr(self, 'unwanted_timeslots', None),
+            }
+
+            # Convert complex types (e.g., other objects) to dictionaries if needed
+            # Example for a hypothetical complex attribute that requires conversion:
+            # if isinstance(self.some_complex_attribute, SomeClass):
+            #     result['some_complex_attribute'] = self.some_complex_attribute.to_dictionary()
+
+            return result
+        except Exception as e:
+            # Log the exception or handle it as needed
+            print(f"Error converting ClassSection to dictionary: {e}")
+            # You might want to return None or raise the exception again after logging
+            # raise
+            return None  # Or return an empty dict {}
+
+            
     def copy(self):
         return ClassSection(
             section=self.section,
@@ -1822,6 +1837,43 @@ def custom_mutate(individual, mutpb):
                     class_section['timeslot'] = f"{new_timeslot['days']} - {new_timeslot['start_time']}"
 
     return individual,
+from datetime import datetime
+
+def preprocess_input_data(class_sections):
+    """
+    Adjusts the input data for each class section to include a 'timeslot' key
+    that combines 'week_days', 'csm_start', and 'csm_end'.
+    
+    Args:
+        class_sections (list): List of dictionaries, each representing a class section.
+    
+    Returns:
+        list: The adjusted list of class sections with added 'timeslot' keys.
+    """
+    adjusted_class_sections = []
+    for section in class_sections:
+        # Combine 'week_days', 'csm_start', and 'csm_end' into a 'timeslot' key
+        week_days = section.get('week_days', '')
+        csm_start = section.get('csm_start', '')
+        csm_end = section.get('csm_end', '')
+        
+        # Only combine if all parts are present
+        if week_days and csm_start and csm_end:
+            timeslot = f"{week_days} - {csm_start} - {csm_end}"
+        else:
+            # Handle cases where the class might not have a defined timeslot
+            timeslot = "Undefined"
+        
+        # Copy the original section dictionary to avoid mutating the original data
+        adjusted_section = section.copy()
+        adjusted_section['timeslot'] = timeslot
+        
+        # Add the adjusted section to the new list
+        adjusted_class_sections.append(adjusted_section)
+    
+    return adjusted_class_sections
+
+
 
 
 
@@ -2001,8 +2053,12 @@ def optimize():
         # Convert class section instances to dictionaries
         class_sections_dictionaries = [class_section.to_dictionary() for class_section in class_sections]
 
+        ## original score
+        orig_score = evaluateSchedule(preprocess_input_data(class_sections_dictionaries))
+       
         three_credit_sections, remaining_class_sections =  split_class_sections(class_sections_dictionaries)
 
+        
         # Optimize the 3-credit classes with Pulp
         three_credit_results = optimize_schedule(three_credit_sections)
 
