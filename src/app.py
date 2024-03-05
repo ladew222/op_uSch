@@ -978,6 +978,11 @@ def optimize_schedule(class_sections):
 
     # Solving the problem
     prob.solve()
+    
+    for variable in prob.variables():
+        print(f"{variable.name} = {variable.varValue}")
+        
+    objective_value = value(prob.objective)
 
     # Results processing
     scheduled_sections = []
@@ -1925,7 +1930,7 @@ def custom_crossover(ind1, ind2):
 
 # Assuming create_individual, create_full_meeting_times, custom_crossover, evaluateSchedule, and divide_schedules_by_credit are defined elsewhere
 
-def run_genetic_algorithm(combined_expanded_schedule, report, ngen=10, pop_size=50, cxpb=0.3, mutpb=0.2):
+def run_genetic_algorithm(combined_expanded_schedule, report, ngen=30, pop_size=50, cxpb=0.3, mutpb=0.2):
     try:
         # Create necessary data
         full_meeting_times_data = create_full_meeting_times()
