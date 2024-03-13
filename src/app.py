@@ -1973,6 +1973,8 @@ def run_genetic_algorithm(combined_expanded_schedule, report, ngen=30, pop_size=
         # Run genetic algorithm
         final_population, logbook = algorithms.eaSimple(population, toolbox, cxpb, mutpb, ngen, stats=stats, verbose=True)
 
+                      
+            
         # Process final population
         sorted_population = sorted(final_population, key=lambda ind: ind.fitness.values[0])  # Sort in ascending order
 
@@ -1991,17 +1993,20 @@ def run_genetic_algorithm(combined_expanded_schedule, report, ngen=30, pop_size=
         #three_credit_classes, remaining_classes = divide_schedules_by_credit(top_unique_schedules[0][0])
 
         return top_unique_schedules
-
     except Exception as e:
-        # Handle the error gracefully
-        initial_sorted_population = sorted(population, key=lambda ind: ind.fitness.values if ind.fitness.valid else float('-inf'), reverse=True)
-        if initial_sorted_population:
-            top_individual = initial_sorted_population[0]
-            # Here you might need to convert the top_individual into the desired return format
-            # For demonstration, we return the individual directly
-            return top_individual
-        else:
-            return "An error occurred, and no valid individuals are available."
+        # Handle the error gracefully and provide diagnostic information
+        print(f"An error occurred during the genetic algorithm execution: {e}")
+        initial_sorted_population = sorted(
+            population, 
+            key=lambda ind: ind.fitness.values if ind.fitness.valid else float('inf')
+        )
+        top_unique_schedules = []
+        for ind in initial_sorted_population:
+            if ind.fitness.valid:
+                fitness_score = ind.fitness.values[0]
+                top_unique_schedules.append((ind, fitness_score))
+                break  # Only take the top individual, like the successful block
+        return top_unique_schedules if top_unique_schedules else [("An error occurred, and no valid individuals are available.", float('inf'))]
 
 
 @app.route('/get_csv', methods=['GET'])
