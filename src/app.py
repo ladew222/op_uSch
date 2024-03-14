@@ -2333,20 +2333,38 @@ def load_original():
     if file:
         # Read the uploaded file data
         uploaded_file_data = file.read().decode('utf-8')
-        
-        # Convert CSV data to JSON
+
+        # Attempt to convert the uploaded file data from CSV to JSON
         try:
             csv_data = io.StringIO(uploaded_file_data)
+            csv_reader = csv.DictReader(csv_data)
+            data_rows = [row for row in csv_reader]
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
-        csv_reader = csv.DictReader(csv_data)
-        
-        # Convert the CSV data to a list of dictionaries
-        json_data = list(csv_reader)
-        
-        # Return the list of dictionaries as JSON
-        return jsonify(json_data), 200
+        # Define the required columns
+        required_columns = {'sec name', 'title', 'min Credit', 'sec Cap', 'room', 'bldg', 'week Days', 'CSM start', 'CSM end', 'faculty1', 'Restrictions', 'Blocked Time Slots'}
+        existing_columns = set(csv_reader.fieldnames)
+
+        # Determine which required columns are missing
+        missing_columns = required_columns - existing_columns
+        added_columns = False
+
+        # Add missing columns with default values
+        if missing_columns:
+            added_columns = True
+            for row in data_rows:
+                for column in missing_columns:
+                    row[column] = None  # Assign a default value or None
+
+        # Convert the data back to CSV or JSON as required by your application
+        # For simplicity, we're returning JSON
+        response_data = {
+            'data': data_rows,
+            'message': 'Missing columns added.' if added_columns else 'All required columns present.'
+        }
+
+        return jsonify(response_data), 200
 
     return jsonify({'error': 'Unknown error occurred'}), 500
 
