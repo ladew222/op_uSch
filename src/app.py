@@ -38,6 +38,7 @@ CORS(app)
 
 global_settings = {}
 results_storage = {}
+
 # Define the problem class
 creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
 creator.create("Individual", list, fitness=creator.FitnessMin)
@@ -364,8 +365,44 @@ def create_full_meeting_times():
     return your_meeting_time_data
 
 
+@app.route('/upload_student_schedule', methods=['POST'])
+def upload_student_schedule():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
 
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    if file:
+        # Read the uploaded file into a DataFrame
+        student_schedule_data = pd.read_csv(file)
+        
+        # Ensure the necessary columns exist
+        expected_columns = ['StudentID', 'Class1', 'Class2', 'Class3', 'Class4']  # Add more if necessary
+        missing_columns = set(expected_columns) - set(student_schedule_data.columns)
+        
+        if missing_columns:
+            # If there are missing columns, return an error
+            return jsonify({
+                'error': f'Missing required columns: {", ".join(missing_columns)}'
+            }), 400
+
+        # Process and store this data for optimization
+        process_student_schedules(student_schedule_data)
+        return jsonify({'message': 'Student schedules uploaded successfully'}), 200
     
+    
+def process_student_schedules(student_schedule_data):
+    student_class_mapping = {}
+    for index, row in student_schedule_data.iterrows():
+        student_id = row['StudentID']
+        classes = [row[col] for col in student_schedule_data.columns if col != 'StudentID' and not pd.isnull(row[col])]
+        student_class_mapping[student_id] = classes
+    
+    # Store this mapping globally or in a file/database for later use in optimization
+    global_settings['student_class_mapping'] = student_class_mapping
+
 class ClassSection:
     def __init__(self, sec_name, title, minCredit, sec_cap, room, bldg, week_days, csm_start, csm_end, faculty1, holdValue=None, restrictions=None, blocked_time_slots=None, assigned_meeting_time_indices=None):
         self.section = sec_name
@@ -689,7 +726,17 @@ def optimize_remaining_classes(class_sections, remaining_timeslots, used_timeslo
 
     # Define objective functions
     schedule_penalty = lpSum(x[cls['section'], tsl] for cls in class_sections for tsl in available_timeslots)
-    blocked_slot_penalty = calculate_blocked_slot_penalty(x, class_sections, available_timeslots)
+    
+    # Check if student class mappings exist
+    student_class_mapping = global_settings.get('student_class_mapping', {})
+
+    if student_class_mapping:
+        # Use student schedule conflict penalty if mappings exist
+        blocked_slot_penalty = calculate_student_schedule_conflict_penalty(x, class_sections, available_timeslots, student_class_mapping)
+    else:
+        # Use default blocked slot penalty if mappings do not exist
+        blocked_slot_penalty = calculate_blocked_slot_penalty(x, class_sections, available_timeslots)
+    
     proximity_penalty = calculate_proximity_penalty(x, class_sections, available_timeslots)
 
     # Adding weighted objectives to the problem
@@ -906,26 +953,52 @@ def optimize_schedule_with_gurobi(class_sections):
     return optimization_results
 
 
+def calculate_student_schedule_conflict_penalty(x, class_sections, timeslots, student_class_mapping, prob):
+    conflict_penalty = 0
+    conflict_vars = {}
+
+    # Iterate over each student and their classes
+    for student, classes in student_class_mapping.items():
+        # Iterate over all pairs of classes for each student
+        for i, class1 in enumerate(classes):
+            for j, class2 in enumerate(classes):
+                if i < j and class1 in x and class2 in x:  # Ensure we only compare each pair once and classes are in x
+                    for timeslot in timeslots:
+                        # Create a new variable for the conflict
+                        var_name = f'conflict_{student}_{class1}_{class2}_{timeslot}'
+                        conflict_vars[var_name] = pulp.LpVariable(var_name, cat='Binary')
+
+                        # Add constraints to ensure the conflict variable is 1 if both classes are scheduled at the same time
+                        prob += conflict_vars[var_name] >= x[class1, timeslot] + x[class2, timeslot] - 1
+                        prob += conflict_vars[var_name] <= x[class1, timeslot]
+                        prob += conflict_vars[var_name] <= x[class2, timeslot]
+
+                        # Add the conflict variable to the objective
+                        conflict_penalty += conflict_vars[var_name]
+
+    return conflict_penalty
+
+
+
+
+
+
 def optimize_schedule(class_sections):
-    # Initial setup
-    linked_sections = []  # This should be defined based on your specific data
-    meeting_times = create_meeting_times()  # Define this function as needed
     
     # Helper function to get attribute or key value
     def get_value(item, key, default=None):
         return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
-
-    # Create a set of unique rooms
+    # Initial setup
+    meeting_times = create_meeting_times()  # Define this function as needed
     rooms = set(cls['room'] for cls in class_sections if cls['room'].strip())
-    instructors = set(get_value(cls, 'faculty1') for cls in class_sections)
+    instructors = set(cls['faculty1'] for cls in class_sections)
     timeslots = [f"{mt['days']} - {mt['start_time']}" for mt in meeting_times]
-
+    
     # Problem definition
     prob = LpProblem("Class_Scheduling", LpMinimize)
 
-    # Decision variables represent the assignment of classes to timeslots.
-    x = pulp.LpVariable.dicts("x", ((cls['section'], tsl) for cls in class_sections for tsl in timeslots), cat='Binary') 
-   
+    # Decision variables
+    x = pulp.LpVariable.dicts("x", ((cls['section'], tsl) for cls in class_sections for tsl in timeslots), cat='Binary')
 
     # Objective function weights
     weights = {
@@ -933,28 +1006,28 @@ def optimize_schedule(class_sections):
         'timeslot_avoidance': 1.0,
         'move_penalty': 1.0,
         'blocked_slot_penalty': 1.0,
-        'linked_sections_penalty': 1.0
+        'student_schedule_conflict': 1.0,  # Renamed for clarity
     }
 
     # Define objective functions and add them to the problem
-    
-    # This adds a penalty for each class overlap that are designated as 'restrictions'
-    class_overlap_penalty = calculate_class_overlap(x, class_sections, meeting_times,timeslots)
-    # penalize for classes in unwanted timeslots
-    timeslot_avoidance_penalty = calculate_timeslot_avoidance(x, class_sections, meeting_times,timeslots)
-    # penalize for classes that are set to start at a specific time but moved
-    move_penalty = calculate_move_penalty(x, class_sections, meeting_times,timeslots)
-    # penalize for classes that are moved to blocked timeslot
+    class_overlap_penalty = calculate_class_overlap(x, class_sections, meeting_times, timeslots)
+    timeslot_avoidance_penalty = calculate_timeslot_avoidance(x, class_sections, meeting_times, timeslots)
+    move_penalty = calculate_move_penalty(x, class_sections, meeting_times, timeslots)
     blocked_slot_penalty = calculate_blocked_slot_penalty(x, class_sections, meeting_times)
-    # penalize for linked sections not being scheduled together;this is for 4 credit classes that are lined to a 1 credit class
-    linked_sections_penalty = calculate_linked_sections_penalty(x, class_sections, timeslots)
+    
+    # Check if student class mappings exist
+    student_class_mapping = global_settings.get('student_class_mapping', {})
+    # Only calculate student_schedule_conflict_penalty if student_class_mapping is present and non-empty
+    student_schedule_conflict_penalty = 0
+    if student_class_mapping:
+        student_schedule_conflict_penalty = calculate_student_schedule_conflict_penalty(x, class_sections, timeslots, student_class_mapping, prob)
 
-    # Adding weighted objectives to the problem
+    # Objective function
     prob += (weights['class_overlap'] * class_overlap_penalty +
-            weights['timeslot_avoidance'] * timeslot_avoidance_penalty +
-            weights['move_penalty'] * move_penalty +
-            weights['blocked_slot_penalty'] * blocked_slot_penalty +
-            weights['linked_sections_penalty'] * linked_sections_penalty)
+             weights['timeslot_avoidance'] * timeslot_avoidance_penalty +
+             weights['move_penalty'] * move_penalty +
+             weights['blocked_slot_penalty'] * blocked_slot_penalty +
+             weights['student_schedule_conflict'] * student_schedule_conflict_penalty)
 
 
     # Constraints
@@ -1669,6 +1742,8 @@ def evaluateSchedule(individual):
     detailed_scores = {}
     class_timings = {}
     class_days = {}
+    # Check if student class mappings exist
+    student_class_mapping = global_settings.get('student_class_mapping', {})
 
     # Function to check if the class follows the MWF or TuTh pattern
     def follows_desired_pattern(course_identifier, timeslots):
@@ -1698,6 +1773,30 @@ def evaluateSchedule(individual):
             days = meeting['timeslot'].split(' - ')[0]
             class_days.setdefault(course_identifier, set()).update(days.split())
 
+        
+        # If student class mappings exist, check for schedule conflicts
+        if student_class_mapping:
+            for student, classes in student_class_mapping.items():
+                if meeting['section'] in classes:
+                    for other_class in classes:
+                        if other_class != meeting['section'] and any(meet['section'] == other_class and meet['timeslot'] == meeting['timeslot'] for meet in individual):
+                            unwanted_timeslot_violations += 1
+
+        # If student mappings do not exist, calculate mutual exclusion and unwanted timeslot violations
+        else:
+            # Mutual exclusion violations
+            mutually_exclusive_sections = meeting.get('avoid_classes', [])
+            for other_meeting in individual:
+                if other_meeting['section'] in mutually_exclusive_sections and meeting['timeslot'] == other_meeting['timeslot']:
+                    mutual_exclusion_violations += 1
+
+            # Unwanted timeslot violations
+            for unwanted_timeslot in meeting.get('unwanted_timeslots', []):
+                unwanted_days, unwanted_time = unwanted_timeslot.split(' - ')
+                if unwanted_days in meeting['timeslot'] and unwanted_time == meeting['timeslot'].split(' - ')[1]:
+                    unwanted_timeslot_violations += 1
+            
+        
         # Check for overlaps, conflicts, and violations
         for j, other_meeting in enumerate(individual):
             if i != j:
