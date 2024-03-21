@@ -1866,6 +1866,8 @@ def evaluateSchedule(individual):
                     detailed_scores[section].setdefault('same_day_violation', 0)
                     detailed_scores[section]['same_day_violation'] += same_day_violation
 
+    
+    
     return {'total_score': total_score, 'detailed_scores': detailed_scores}
 
 
@@ -2200,6 +2202,9 @@ def optimize():
         #all_schedules = ({'schedule': combined_expanded_schedule, 'score': pulp_score, 'algorithm': 'PuLP', 'calendar_events':calendar_events , 'slot_differences': 0})
         
         #marked_combined_expanded_schedule
+        
+        
+        
         all_schedules = [{
             'schedule': combined_expanded_schedule,
             'score': pulp_score,
