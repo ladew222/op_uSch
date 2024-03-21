@@ -732,7 +732,7 @@ def optimize_remaining_classes(class_sections, remaining_timeslots, used_timeslo
 
     if student_class_mapping:
         # Use student schedule conflict penalty if mappings exist
-        blocked_slot_penalty = calculate_student_schedule_conflict_penalty(x, class_sections, available_timeslots, student_class_mapping)
+        blocked_slot_penalty = calculate_student_schedule_conflict_penalty(x, class_sections, available_timeslots, student_class_mapping,prob)
     else:
         # Use default blocked slot penalty if mappings do not exist
         blocked_slot_penalty = calculate_blocked_slot_penalty(x, class_sections, available_timeslots)
